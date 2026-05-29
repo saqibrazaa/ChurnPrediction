@@ -188,7 +188,10 @@ def create_sidebar():
 @st.cache_resource
 def load_data():
     """Load and cache the dataset"""
-    df = pd.read_csv('TelcoCustomerChurn.csv')
+    # Resolve path relative to this script so Streamlit finds the CSV when deployed
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(script_dir, 'TelcoCustomerChurn.csv')
+    df = pd.read_csv(file_path)
     return df
 
 def preprocess_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, dict]:
@@ -203,7 +206,7 @@ def preprocess_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, dict]:
     df_processed['TotalCharges'] = pd.to_numeric(df_processed['TotalCharges'], errors='coerce')
     
     # Fill missing TotalCharges with monthly charges (new customers)
-    df_processed['TotalCharges'].fillna(df_processed['MonthlyCharges'], inplace=True)
+    df_processed['TotalCharges'] = df_processed['TotalCharges'].fillna(df_processed['MonthlyCharges'])
     
     # Impute remaining numeric missing values with median
     numeric_cols = df_processed.select_dtypes(include=[np.number]).columns.tolist()
@@ -211,7 +214,7 @@ def preprocess_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, dict]:
         df_processed[numeric_cols] = df_processed[numeric_cols].fillna(df_processed[numeric_cols].median())
     
     # Identify and handle categorical columns
-    categorical_cols = df_processed.select_dtypes(include=['object']).columns.tolist()
+    categorical_cols = df_processed.select_dtypes(include=['object', 'string']).columns.tolist()
     if 'customerID' in categorical_cols:
         categorical_cols.remove('customerID')
     
