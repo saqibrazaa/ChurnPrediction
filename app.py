@@ -338,16 +338,20 @@ class ChurnModelPipeline:
         return results, best_model_name
     
     def save_model(self, filepath: str = "model.pkl"):
-        """Save the best model to disk"""
+        """Save the pipeline state to disk"""
+        state = {
+            "best_model": self.best_model,
+            "scaler": self.scaler,
+            "encoders": getattr(self, "encoders", {}),
+            "feature_names": getattr(self, "feature_names_", []),
+        }
         with open(filepath, "wb") as f:
-            # persist the entire pipeline object (includes scaler, best_model, etc.)
-            pickle.dump(self, f)
+            pickle.dump(state, f)
     
     def load_model(self, filepath: str = "model.pkl"):
-        """Load model from disk"""
+        """Load pipeline state from disk"""
         with open(filepath, "rb") as f:
             loaded = pickle.load(f)
-        # If a pipeline object was saved, return it for use
         return loaded
 
 # ============================================================================
@@ -688,15 +692,19 @@ def page_predictions():
         # try loading from serialized pipeline file
         if os.path.exists("model.pkl"):
             try:
-                loaded = ChurnModelPipeline().load_model("model.pkl")
-                # if a pipeline object was saved, use it; otherwise try to wrap
-                if isinstance(loaded, ChurnModelPipeline):
-                    pipeline = loaded
-                else:
-                    # loaded could be best_model only; create a small wrapper
+                loaded_state = ChurnModelPipeline().load_model("model.pkl")
+                if isinstance(loaded_state, dict):
                     wrapper = ChurnModelPipeline()
-                    wrapper.best_model = loaded
+                    wrapper.best_model = loaded_state.get("best_model")
+                    wrapper.scaler = loaded_state.get("scaler", StandardScaler())
+                    wrapper.encoders = loaded_state.get("encoders", {})
+                    wrapper.feature_names_ = loaded_state.get("feature_names", [])
                     pipeline = wrapper
+                elif isinstance(loaded_state, ChurnModelPipeline):
+                    pipeline = loaded_state
+                else:
+                    st.warning("Saved model format is not supported. Please retrain the model.")
+                    return
 
                 st.session_state.pipeline = pipeline
             except Exception:
