@@ -189,10 +189,16 @@ def create_sidebar():
 def load_data():
     """Load and cache the dataset"""
     # Resolve path relative to this script so Streamlit finds the CSV when deployed
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(script_dir, 'TelcoCustomerChurn.csv')
+    file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'TelcoCustomerChurn.csv')
     df = pd.read_csv(file_path)
     return df
+
+
+def get_model_filepath(filename: str = 'model.pkl') -> str:
+    """Get an absolute file path inside the app directory."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, filename)
+
 
 def preprocess_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, dict]:
     """
@@ -339,17 +345,29 @@ class ChurnModelPipeline:
     
     def save_model(self, filepath: str = "model.pkl"):
         """Save the pipeline state to disk"""
+        if not os.path.isabs(filepath):
+            filepath = get_model_filepath(filepath)
+
         state = {
             "best_model": self.best_model,
             "scaler": self.scaler,
             "encoders": getattr(self, "encoders", {}),
             "feature_names": getattr(self, "feature_names_", []),
+            "model_results": getattr(self, "model_results", {}),
+            "metrics_df": getattr(self, "metrics_df", None),
+            "leaderboard_df": getattr(self, "leaderboard_df", None),
+            "best_model_name": getattr(self, "best_model_name", None),
+            "champion_name": getattr(self, "champion_name", None),
+            "champion_metrics": getattr(self, "champion_metrics", None),
         }
         with open(filepath, "wb") as f:
             pickle.dump(state, f)
     
     def load_model(self, filepath: str = "model.pkl"):
         """Load pipeline state from disk"""
+        if not os.path.isabs(filepath):
+            filepath = get_model_filepath(filepath)
+
         with open(filepath, "rb") as f:
             loaded = pickle.load(f)
         return loaded
@@ -518,70 +536,119 @@ def page_model_training():
     # Train models
     st.subheader("Training 6 ML Models with GridSearchCV")
 
-    pipeline = ChurnModelPipeline()
-    results, best_model_name = pipeline.train_models(X_train, X_test, y_train, y_test)
+    model_path = get_model_filepath("model.pkl")
+    if "training_complete" not in st.session_state:
+        st.session_state.training_complete = False
 
-    # Attach encoders and feature names to pipeline for persistence
-    try:
-        pipeline.encoders = encoders
-    except NameError:
-        pipeline.encoders = {}
-    pipeline.feature_names_ = X.columns.tolist()
+    if not st.session_state.training_complete:
+        if os.path.exists(model_path):
+            try:
+                saved = ChurnModelPipeline().load_model(model_path)
+                if isinstance(saved, dict) and saved.get("model_results"):
+                    st.success("✅ Loaded previously trained model from disk.")
+                    st.session_state.pipeline = ChurnModelPipeline()
+                    st.session_state.pipeline.best_model = saved.get("best_model")
+                    st.session_state.pipeline.scaler = saved.get("scaler", StandardScaler())
+                    st.session_state.pipeline.encoders = saved.get("encoders", {})
+                    st.session_state.pipeline.feature_names_ = saved.get("feature_names", [])
+                    st.session_state.pipeline.model_results = saved.get("model_results", {})
+                    st.session_state.pipeline.metrics_df = saved.get("metrics_df")
+                    st.session_state.pipeline.leaderboard_df = saved.get("leaderboard_df")
+                    st.session_state.pipeline.best_model_name = saved.get("best_model_name")
+                    st.session_state.pipeline.champion_name = saved.get("champion_name")
+                    st.session_state.pipeline.champion_metrics = saved.get("champion_metrics")
+                    st.session_state.model_results = saved.get("model_results", {})
+                    st.session_state.best_model_name = saved.get("best_model_name")
+                    st.session_state.metrics_df = saved.get("metrics_df")
+                    st.session_state.leaderboard_df = saved.get("leaderboard_df")
+                    st.session_state.champion_name = saved.get("champion_name")
+                    st.session_state.champion_metrics = saved.get("champion_metrics")
+                    st.session_state.training_complete = True
+                else:
+                    st.warning("Previous model file exists but does not contain full training metadata.")
+            except Exception:
+                st.warning("Previous model file could not be loaded. You can retrain below.")
 
-    # Save pipeline object
-    pipeline.save_model("model.pkl")
-    st.success(f"✅ Model saved as model.pkl")
+    if not st.session_state.training_complete:
+        if not st.button("🚀 Start Training"):
+            st.info("Press the button above to begin model training. This may take a few minutes on Streamlit Cloud.")
+            return
 
-    # Build leaderboard data
-    metrics_df = pd.DataFrame({
-        model: {
-            "Accuracy": results[model]["accuracy"],
-            "Precision": results[model]["precision"],
-            "Recall": results[model]["recall"],
-            "F1-Score": results[model]["f1"],
-            "ROC-AUC": results[model]["roc_auc"]
-        }
-        for model in results
-    }).T
-    leaderboard_df = metrics_df.sort_values(by='F1-Score', ascending=False)
-    champion_name = leaderboard_df.index[0]
-    champion_metrics = leaderboard_df.loc[champion_name]
+        with st.spinner("Training models. Please wait..."):
+            pipeline = ChurnModelPipeline()
+            results, best_model_name = pipeline.train_models(X_train, X_test, y_train, y_test)
 
-    st.divider()
-    st.info("✅ Model training complete. Visit the 'Model Comparison' page to explore the champion dashboard and leaderboard.")
+            # Attach encoders and feature names to pipeline for persistence
+            pipeline.encoders = encoders
+            pipeline.feature_names_ = X.columns.tolist()
 
-    st.divider()
+            # Build leaderboard data
+            metrics_df = pd.DataFrame({
+                model: {
+                    "Accuracy": results[model]["accuracy"],
+                    "Precision": results[model]["precision"],
+                    "Recall": results[model]["recall"],
+                    "F1-Score": results[model]["f1"],
+                    "ROC-AUC": results[model]["roc_auc"]
+                }
+                for model in results
+            }).T
+            leaderboard_df = metrics_df.sort_values(by='F1-Score', ascending=False)
+            champion_name = leaderboard_df.index[0]
+            champion_metrics = leaderboard_df.loc[champion_name]
 
-    # Best model summary
-    st.subheader(f"🏆 Best Model: {best_model_name}")
-    best_metrics = results[best_model_name]
-    col1, col2, col3, col4, col5 = st.columns(5)
+            pipeline.model_results = results
+            pipeline.best_model_name = best_model_name
+            pipeline.metrics_df = metrics_df
+            pipeline.leaderboard_df = leaderboard_df
+            pipeline.champion_name = champion_name
+            pipeline.champion_metrics = champion_metrics
 
-    with col1:
-        st.metric("Accuracy", f"{best_metrics['accuracy']:.4f}")
-    with col2:
-        st.metric("Precision", f"{best_metrics['precision']:.4f}")
-    with col3:
-        st.metric("Recall", f"{best_metrics['recall']:.4f}")
-    with col4:
-        st.metric("F1-Score", f"{best_metrics['f1']:.4f}")
-    with col5:
-        st.metric("ROC-AUC", f"{best_metrics['roc_auc']:.4f}")
+            # Save pipeline object
+            pipeline.save_model(model_path)
+            st.success(f"✅ Model saved as {model_path}")
 
-    st.divider()
+            st.session_state.pipeline = pipeline
+            st.session_state.encoders = encoders
+            st.session_state.model_results = results
+            st.session_state.best_model_name = best_model_name
+            st.session_state.metrics_df = metrics_df
+            st.session_state.leaderboard_df = leaderboard_df
+            st.session_state.champion_name = champion_name
+            st.session_state.champion_metrics = champion_metrics
+            st.session_state.training_complete = True
 
-    # Save trained model context for the comparison dashboard and predictions
-    st.session_state.pipeline = pipeline
-    st.session_state.encoders = encoders
-    st.session_state.model_results = results
-    st.session_state.best_model_name = best_model_name
-    st.session_state.metrics_df = metrics_df
-    st.session_state.leaderboard_df = leaderboard_df
-    st.session_state.champion_name = champion_name
-    st.session_state.champion_metrics = champion_metrics
+    if st.session_state.training_complete:
+        results = st.session_state.model_results
+        best_model_name = st.session_state.best_model_name
+        metrics_df = st.session_state.metrics_df
+        leaderboard_df = st.session_state.leaderboard_df
+        champion_name = st.session_state.champion_name
+        champion_metrics = st.session_state.champion_metrics
 
-    st.divider()
-    st.info("✅ Model comparison page is ready once you select 'Model Comparison' from the sidebar.")
+        st.success("✅ Model training complete. Visit the 'Model Comparison' page to explore the champion dashboard and leaderboard.")
+        st.divider()
+        st.subheader(f"🏆 Best Model: {best_model_name}")
+        best_metrics = results[best_model_name]
+        col1, col2, col3, col4, col5 = st.columns(5)
+
+        with col1:
+            st.metric("Accuracy", f"{best_metrics['accuracy']:.4f}")
+        with col2:
+            st.metric("Precision", f"{best_metrics['precision']:.4f}")
+        with col3:
+            st.metric("Recall", f"{best_metrics['recall']:.4f}")
+        with col4:
+            st.metric("F1-Score", f"{best_metrics['f1']:.4f}")
+        with col5:
+            st.metric("ROC-AUC", f"{best_metrics['roc_auc']:.4f}")
+
+        st.divider()
+        st.info("✅ Model comparison page is ready once you select 'Model Comparison' from the sidebar.")
+        return
+
+    # If the function reaches this point without training complete, return early.
+    return
 
 
 def page_model_comparison_dashboard():
@@ -590,8 +657,26 @@ def page_model_comparison_dashboard():
     theme = get_current_theme()
 
     if "model_results" not in st.session_state:
-        st.warning("⚠️ No trained model data found. Please train models first in the 'Model Training' page.")
-        return
+        model_path = get_model_filepath("model.pkl")
+        if os.path.exists(model_path):
+            try:
+                saved = ChurnModelPipeline().load_model(model_path)
+                if isinstance(saved, dict) and saved.get("model_results"):
+                    st.session_state.model_results = saved.get("model_results", {})
+                    st.session_state.best_model_name = saved.get("best_model_name")
+                    st.session_state.metrics_df = saved.get("metrics_df")
+                    st.session_state.leaderboard_df = saved.get("leaderboard_df")
+                    st.session_state.champion_name = saved.get("champion_name")
+                    st.session_state.champion_metrics = saved.get("champion_metrics")
+                else:
+                    st.warning("⚠️ No trained model data found. Please train models first in the 'Model Training' page.")
+                    return
+            except Exception:
+                st.warning("⚠️ No trained model data found. Please train models first in the 'Model Training' page.")
+                return
+        else:
+            st.warning("⚠️ No trained model data found. Please train models first in the 'Model Training' page.")
+            return
 
     metrics_df = st.session_state.metrics_df
     leaderboard_df = st.session_state.leaderboard_df
@@ -688,11 +773,12 @@ def page_predictions():
 
     # Attempt to ensure a pipeline is available: session state first, then disk
     pipeline = st.session_state.get("pipeline", None)
+    model_path = get_model_filepath("model.pkl")
     if pipeline is None:
         # try loading from serialized pipeline file
-        if os.path.exists("model.pkl"):
+        if os.path.exists(model_path):
             try:
-                loaded_state = ChurnModelPipeline().load_model("model.pkl")
+                loaded_state = ChurnModelPipeline().load_model(model_path)
                 if isinstance(loaded_state, dict):
                     wrapper = ChurnModelPipeline()
                     wrapper.best_model = loaded_state.get("best_model")
